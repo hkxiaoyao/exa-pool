@@ -1,5 +1,5 @@
 /**
- * Exa Key Balancer - Cloudflare Worker
+ * Exa Pool - Cloudflare Worker
  * A load balancing solution for managing multiple Exa API keys
  */
 
