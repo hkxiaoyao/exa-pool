@@ -143,6 +143,9 @@ const routes = [
   { pattern: /^\/api\/admin\/stats$/, method: 'GET', handler: getStats },
   
   // Proxy API - 官方 Exa API 兼容路径
+  { pattern: /^\/research\/v1$/, method: 'POST', handler: proxyResearchCreate },
+  { pattern: /^\/research\/v1$/, method: 'GET', handler: proxyResearchList },
+  { pattern: /^\/research\/v1\/(?<id>[^/]+)$/, method: 'GET', handler: proxyResearchGet },
   { pattern: /^\/search$/, method: 'POST', handler: proxySearch },
   { pattern: /^\/contents$/, method: 'POST', handler: proxyContents },
   { pattern: /^\/findSimilar$/, method: 'POST', handler: proxyFindSimilar },
@@ -2812,6 +2815,170 @@ async function proxyAnswer(request, env, params) {
       400
     );
   }
+}
+
+// ============================================================================
+// Exa Research API 代理
+// ============================================================================
+
+/**
+ * 创建 Research 任务
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
+async function proxyResearchCreate(request, env) {
+  const authResult = await requireApiKeyAuth(request, env.DB);
+  if (!authResult.valid) {
+    return jsonResponse(
+      { error: 'Unauthorized', message: authResult.error },
+      401
+    );
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch (error) {
+    return jsonResponse(
+      { error: 'Bad Request', message: 'Invalid JSON body' },
+      400
+    );
+  }
+
+  if (!body || typeof body.instructions !== 'string' || body.instructions.trim().length === 0) {
+    return jsonResponse(
+      { error: 'Bad Request', message: 'instructions is required and must be a non-empty string' },
+      400
+    );
+  }
+
+  if (body.instructions.length > 4096) {
+    return jsonResponse(
+      { error: 'Bad Request', message: 'instructions too long (max 4096 characters)' },
+      400
+    );
+  }
+
+  if (body.model && !['exa-research-fast', 'exa-research', 'exa-research-pro'].includes(body.model)) {
+    return jsonResponse(
+      { error: 'Bad Request', message: 'model must be one of exa-research-fast|exa-research|exa-research-pro' },
+      400
+    );
+  }
+
+  if (body.outputSchema && typeof body.outputSchema !== 'object') {
+    return jsonResponse(
+      { error: 'Bad Request', message: 'outputSchema must be an object when provided' },
+      400
+    );
+  }
+
+  return executeWithRetry(env, async (exaKey) => {
+    const response = await fetch('https://api.exa.ai/research/v1', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': exaKey
+      },
+      body: JSON.stringify(body)
+    });
+
+    return processExaResponse(response);
+  });
+}
+
+/**
+ * 获取 Research 任务列表
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
+async function proxyResearchList(request, env) {
+  const authResult = await requireApiKeyAuth(request, env.DB);
+  if (!authResult.valid) {
+    return jsonResponse(
+      { error: 'Unauthorized', message: authResult.error },
+      401
+    );
+  }
+
+  const url = new URL(request.url);
+  const params = new URLSearchParams();
+
+  const limit = url.searchParams.get('limit');
+  if (limit !== null) {
+    const n = Number(limit);
+    if (!Number.isInteger(n) || n < 1 || n > 50) {
+      return jsonResponse(
+        { error: 'Bad Request', message: 'limit must be an integer between 1 and 50' },
+        400
+      );
+    }
+    params.set('limit', String(n));
+  }
+
+  const cursor = url.searchParams.get('cursor');
+  if (cursor) {
+    params.set('cursor', cursor);
+  }
+
+  const upstreamUrl = params.toString()
+    ? `https://api.exa.ai/research/v1?${params.toString()}`
+    : 'https://api.exa.ai/research/v1';
+
+  return executeWithRetry(env, async (exaKey) => {
+    const response = await fetch(upstreamUrl, {
+      method: 'GET',
+      headers: {
+        'x-api-key': exaKey
+      }
+    });
+
+    return processExaResponse(response);
+  });
+}
+
+/**
+ * 获取单个 Research 任务
+ * @param {Request} request
+ * @param {Env} env
+ * @param {Object} params
+ * @returns {Promise<Response>}
+ */
+async function proxyResearchGet(request, env, params) {
+  const authResult = await requireApiKeyAuth(request, env.DB);
+  if (!authResult.valid) {
+    return jsonResponse(
+      { error: 'Unauthorized', message: authResult.error },
+      401
+    );
+  }
+
+  const researchId = params?.id;
+  if (!researchId) {
+    return jsonResponse(
+      { error: 'Bad Request', message: 'researchId is required in path' },
+      400
+    );
+  }
+
+  const url = new URL(request.url);
+  const queryString = url.searchParams.toString();
+  const upstreamUrl = queryString
+    ? `https://api.exa.ai/research/v1/${encodeURIComponent(researchId)}?${queryString}`
+    : `https://api.exa.ai/research/v1/${encodeURIComponent(researchId)}`;
+
+  return executeWithRetry(env, async (exaKey) => {
+    const response = await fetch(upstreamUrl, {
+      method: 'GET',
+      headers: {
+        'x-api-key': exaKey
+      }
+    });
+
+    return processExaResponse(response);
+  });
 }
 
 /**
